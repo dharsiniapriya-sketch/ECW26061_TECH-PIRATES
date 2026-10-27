@@ -1,0 +1,174 @@
+clc;
+clear;
+close all;
+
+% =========================================================================
+% ECW26061 - DC Motor Speed Control Under Varying Load Torque
+% Comparative Analysis: P, PI, and PID Controllers
+% =========================================================================
+
+% --- Motor Parameters ---
+R  = 2.0;       % Armature resistance (Ohm)
+L  = 0.5;       % Armature inductance (H)
+Ke = 0.1;       % Back EMF constant (V/(rad/s))
+Kt = 0.1;       % Torque constant (N.m/A)
+J  = 0.02;      % Moment of inertia (kg.m^2)
+B  = 0.001;     % Friction coefficient (N.m.s/rad)
+
+% --- Simulation Settings ---
+dt = 0.001;                % Time step (s)
+T  = 6.0;                  % Total simulation time (s)
+t  = 0:dt:T;
+N  = length(t);
+
+% --- Control Requirements ---
+setpoint_rpm = 1000;                       % Target Speed (RPM)
+setpoint_w   = setpoint_rpm * (2*pi)/60;   % Target Speed (rad/s)
+Vmax         = 24;                         % Max Supply Voltage Limit (V)
+
+% --- Varying Load Torque Profile ---
+Tload = 0.02 * ones(1, N);
+Tload(t >= 3.0) = 0.08;
+
+% --- Controller Gains ---
+gains.P   = [0.8,  0.0, 0.00];
+gains.PI  = [0.8,  1.5, 0.00];
+gains.PID = [1.2,  2.5, 0.05];
+
+ctrl_names = {'P', 'PI', 'PID'};
+
+% Arrays to store results
+rpm_results = zeros(3, N);
+V_results   = zeros(3, N);
+
+overshoot_vec     = zeros(1, 3);
+settling_time_vec = zeros(1, 3);
+final_speed_vec   = zeros(1, 3);
+speed_error_vec   = zeros(1, 3);
+
+% --- Simulation Loop for Each Controller ---
+for idx = 1:length(ctrl_names)
+    type = ctrl_names{idx};
+    Kp = gains.(type)(1);
+    Ki = gains.(type)(2);
+    Kd = gains.(type)(3);
+    
+    i = 0;
+    omega = 0;
+    integral_err = 0;
+    prev_err = 0;
+    
+    rpm_sim = zeros(1, N);
+    V_sim   = zeros(1, N);
+    
+    for k = 1:N
+        err = setpoint_w - omega;
+        integral_err = integral_err + err * dt;
+        
+        if k > 1
+            deriv_err = (err - prev_err) / dt;
+        else
+            deriv_err = 0;
+        end
+        prev_err = err;
+        
+        u = Kp * err + Ki * integral_err + Kd * deriv_err;
+        V_ctrl = max(min(u, Vmax), -Vmax);
+        
+        if u ~= V_ctrl && sign(u) == sign(err)
+            integral_err = integral_err - err * dt;
+        end
+        
+        di     = (V_ctrl - R*i - Ke*omega) / L;
+        domega = (Kt*i - B*omega - Tload(k)) / J;
+        
+        i     = i + di * dt;
+        omega = omega + domega * dt;
+        
+        rpm_sim(k) = omega * 60 / (2*pi);
+        V_sim(k)   = V_ctrl;
+    end
+    
+    rpm_results(idx, :) = rpm_sim;
+    V_results(idx, :)   = V_sim;
+    
+    % Performance Metrics
+    rpm_curve = rpm_sim(1:round(3.0/dt));
+    peak_val  = max(rpm_curve);
+    
+    overshoot_vec(idx) = max(0, ((peak_val - setpoint_rpm) / setpoint_rpm) * 100);
+    
+    settled_indices = find(abs(rpm_curve - setpoint_rpm) <= 0.02 * setpoint_rpm);
+    if ~isempty(settled_indices)
+        settling_time_vec(idx) = t(settled_indices(1));
+    else
+        settling_time_vec(idx) = 0;
+    end
+    
+    final_speed_vec(idx) = rpm_sim(end);
+    speed_error_vec(idx) = abs(setpoint_rpm - rpm_sim(end));
+end
+
+% FIGURE 1: Continuous Time Responses
+figure('Name', 'Speed Response Plot', 'NumberTitle', 'off');
+
+subplot(3,1,1);
+plot(t, rpm_results(1,:), 'r', 'LineWidth', 1.5); hold on;
+plot(t, rpm_results(2,:), 'g', 'LineWidth', 1.5);
+plot(t, rpm_results(3,:), 'b', 'LineWidth', 2.0);
+yline(setpoint_rpm, 'k--', 'Target Speed', 'LineWidth', 1.2);
+xline(3.0, 'm--', 'Load Step Change (0.08 Nm)');
+grid on;
+title('DC Motor Speed Response');
+xlabel('Time (s)'); ylabel('Speed (RPM)');
+legend('P', 'PI', 'PID', 'Location', 'SouthEast');
+
+subplot(3,1,2);
+plot(t, Tload, 'k', 'LineWidth', 1.5);
+grid on;
+title('Varying Load Torque Profile');
+xlabel('Time (s)'); ylabel('Torque (N.m)');
+
+subplot(3,1,3);
+plot(t, V_results(1,:), 'r', 'LineWidth', 1.2); hold on;
+plot(t, V_results(2,:), 'g', 'LineWidth', 1.2);
+plot(t, V_results(3,:), 'b', 'LineWidth', 1.5);
+yline(Vmax, 'k:', 'V_{max} (24V)');
+grid on;
+title('Control Signal (Applied Voltage)');
+xlabel('Time (s)'); ylabel('Voltage (V)');
+legend('P', 'PI', 'PID', 'Location', 'SouthEast');
+
+% FIGURE 2: Bar Charts Comparison
+figure('Name', 'Controllers Performance Metrics Comparison', 'NumberTitle', 'off');
+
+subplot(1,3,1);
+b1 = bar(ctrl_names, overshoot_vec, 'FaceColor', 'flat');
+b1.CData(1,:) = [0.85 0.325 0.098]; b1.CData(2,:) = [0.466 0.674 0.188]; b1.CData(3,:) = [0 0.447 0.741];
+grid on; ylabel('Overshoot (%)'); title('Percentage Overshoot');
+text(1:length(overshoot_vec), overshoot_vec, num2str(overshoot_vec', '%.2f%%'), ...
+    'Vert','bottom','Horiz','center', 'FontWeight', 'bold');
+
+subplot(1,3,2);
+b2 = bar(ctrl_names, settling_time_vec, 'FaceColor', 'flat');
+b2.CData(1,:) = [0.85 0.325 0.098]; b2.CData(2,:) = [0.466 0.674 0.188]; b2.CData(3,:) = [0 0.447 0.741];
+grid on; ylabel('Time (seconds)'); title('Settling Time (2% Band)');
+text(1:length(settling_time_vec), settling_time_vec, num2str(settling_time_vec', '%.2f s'), ...
+    'Vert','bottom','Horiz','center', 'FontWeight', 'bold');
+
+subplot(1,3,3);
+b3 = bar(ctrl_names, speed_error_vec, 'FaceColor', 'flat');
+b3.CData(1,:) = [0.85 0.325 0.098]; b3.CData(2,:) = [0.466 0.674 0.188]; b3.CData(3,:) = [0 0.447 0.741];
+grid on; ylabel('Speed Error (RPM)'); title('Steady-State Speed Error');
+text(1:length(speed_error_vec), speed_error_vec, num2str(speed_error_vec', '%.2f RPM'), ...
+    'Vert','bottom','Horiz','center', 'FontWeight', 'bold');
+
+% Summary Table Output
+fprintf('\n================ CONTROLLER PERFORMANCE METRICS ================\n');
+fprintf('%-12s | %-15s | %-15s | %-18s\n', 'Controller', 'Overshoot (%)', 'Settling Time (s)', 'Final Speed (RPM)');
+fprintf('----------------------------------------------------------------\n');
+for idx = 1:length(ctrl_names)
+    fprintf('%-12s | %-15.2f | %-15.2f | %-18.2f\n', ...
+        ctrl_names{idx}, overshoot_vec(idx), settling_time_vec(idx), final_speed_vec(idx));
+end
+fprintf('================================================================\n');
